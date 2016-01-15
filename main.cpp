@@ -126,6 +126,18 @@ string hexdigest(const unsigned char *digest)
     return r;
 }
 
+struct Args
+{
+    string xml;
+    int threads;
+    string output_dir;
+    bool verbose;
+};
+
+Args args;
+
+std::atomic_int unique_tiles;
+
 void render(Map &m, projectionconfig *prj, const string& outputdir, int x, int y, int z)
 {
     std::ostringstream o;
@@ -165,20 +177,34 @@ void render(Map &m, projectionconfig *prj, const string& outputdir, int x, int y
     int ofd = open(image.c_str(), O_CREAT | O_EXCL);
     if (ofd > 0)
     {
+        unique_tiles++;
+        if (args.verbose)
+            cout << "writing image: " << image << " (" << data.size() << " bytes)" << endl;
         size_t b = data.size();
+        size_t pos = 0;
         while (b > 0) {
-            ssize_t r = write(ofd, data.c_str(), 8192);
+            ssize_t r = write(ofd, data.c_str() + pos, std::min<size_t>(8192, data.size() - pos));
             if (r < 0) {
                 perror((string("Error writing to ") + image.string()).c_str());
                 break;
             }
+            pos += r;
             b -= r;
+            if (r == 0) {
+                assert(pos == data.size());
+                assert(b == 0);
+            }
         }
-	close(ofd);
+        close(ofd);
     } else if (errno != EEXIST) {
         perror((string("Error opening ") + image.string() + "for writing").c_str());
+    } else if (errno == EEXIST) {
+        if (args.verbose)
+            cout << "already existed: " << image << endl;
     }
 
+    if (args.verbose)
+        cout << "creating link: " << tilename << " -> " << image << endl;
     fs::create_symlink(image, tilename);
 
     //mapnik::save_to_file(view, tilename, "png256");
@@ -236,15 +262,6 @@ void render_thread(const string& outputdir, const string& xml) {
     finished_threads++;
 }
 
-struct Args
-{
-    string xml;
-    int threads;
-    string output_dir;
-};
-
-Args args;
-
 namespace po = boost::program_options;
 
 int parse_args(int argc, char *argv[], Args *args) {
@@ -260,6 +277,8 @@ int parse_args(int argc, char *argv[], Args *args) {
                     "directory to store rendered tiles")
             (",n", po::value<int>(&args->threads)->default_value(1),
                     "number of threads")
+            (",v", po::value<bool>(&args->verbose)->default_value(false),
+                    "be verbose")
             ;
     po::positional_options_description pod;
     pod.add("input", -1);
@@ -323,6 +342,7 @@ int main(int argc, char *argv[])
 
     tilecount = 0;
     finished_threads = 0;
+    unique_tiles = 0;
     next_tile = tiles.begin();
 
     int thread_count = args.threads;
@@ -343,7 +363,7 @@ int main(int argc, char *argv[])
     while (true)
     {
         std::this_thread::sleep_for(d);
-        printf("Rendered %d tiles  \r", int(tilecount));
+        printf("Rendered %d tiles (%d unique)    \r", int(tilecount), int(unique_tiles));
         fflush(stdout);
         if (finished_threads >= thread_count)
             break;
