@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <fcntl.h>
 
 #include <mutex>
 #include <thread>
@@ -160,13 +161,23 @@ void render(Map &m, projectionconfig *prj, const string& outputdir, int x, int y
     auto image = fs::path(outputdir)
             / "images" / (hexdigest(hash) + ".png");
     cout << "image: " << image << endl;
-    if (fs::exists(image))
-        return;
 
-    fs::ofstream f;
-    f.open(image);
-    f.write(data.c_str(), data.size());
-    f.close();
+    int ofd = open(image.c_str(), O_CREAT | O_EXCL);
+    if (ofd > 0)
+    {
+        size_t b = data.size();
+        while (b > 0) {
+            ssize_t r = write(ofd, data.c_str(), 8192);
+            if (r < 0) {
+                perror((string("Error writing to ") + image.string()).c_str());
+                break;
+            }
+            b -= r;
+        }
+        write(ofd, data.c_str(), data.size());
+    } else if (errno != EEXIST) {
+        perror((string("Error opening ") + image.string() + "for writing").c_str());
+    }
 
     //mapnik::save_to_file(view, tilename, "png256");
 }
