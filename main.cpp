@@ -157,8 +157,9 @@ void render(Map &m, projectionconfig *prj, const string& outputdir, int x, int y
     //mbedtls_md(mbedtls_md_info_from_type(MBEDTLS_MD_MD5),
     mbedtls_md5(reinterpret_cast<const unsigned char*>(data.c_str()),data.size(),hash);
 
-    fs::path image(outputdir);
-    image = image / hexdigest(hash) / ".png";
+    auto image = fs::path(outputdir)
+            / "images" / (hexdigest(hash) + ".png");
+    cout << "image: " << image << endl;
     if (fs::exists(image))
         return;
 
@@ -322,7 +323,7 @@ int main(int argc, char *argv[])
 //            to = tiles.end();
 //        }
 
-        threads[i] = std::thread { render_thread, tiles_dir, args.xml };
+        threads[i] = std::thread { render_thread, args.output_dir, args.xml };
     }
 
     std::chrono::milliseconds d(500);
