@@ -1,11 +1,14 @@
 #include <stdio.h>
-#include <iostream>
-#include <vector>
+
+#include <mutex>
 #include <thread>
+#include <vector>
 #include <string>
-#include <sstream>
 #include <atomic>
 #include <chrono>
+#include <sstream>
+#include <iostream>
+#include <system_error>
 
 #include <mapnik/map.hpp>
 #include <mapnik/image.hpp>
@@ -19,12 +22,18 @@
 #include <mapnik/datasource_cache.hpp>
 
 #include <boost/program_options.hpp>
+#include <boost/filesystem.hpp>
+#include <boost/filesystem/fstream.hpp>
+
+#include <mbedtls/md5.h>
 
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <errno.h>
 
 #define ATRENDER_VERSION "0.1"
+
+namespace fs = boost::filesystem;
 
 using std::cerr;
 using std::cout;
@@ -103,17 +112,31 @@ mapnik::box2d<double> tile2prjbounds(struct projectionconfig * prj, int x, int y
     return  bbox;
 }
 
-
-void makedir(string path)
+string hexdigest(const unsigned char *digest)
 {
-    //cout << "creating dir " << path << endl;
-    int r = mkdir(path.c_str(), 0777);
-    if (r != 0 && errno != EEXIST)
-        throw std::runtime_error("Error creating:" + path);
+    string r;
+    for (int i=0; i<16; i++)
+    {
+        unsigned char low_nibble = digest[i] & 15;
+        unsigned char high_nibble = digest[i] >> 4;
+        r += "0123456789abcdef"[high_nibble];
+        r += "0123456789abcdef"[low_nibble];
+    }
+    return r;
 }
 
 void render(Map &m, projectionconfig *prj, const string& outputdir, int x, int y, int z)
 {
+    std::ostringstream o;
+    o << outputdir << "/links/" << z << "/" << x << "/" << y << ".png";
+    fs::path tilename(o.str());
+
+    if (fs::exists(tilename))
+        return;
+
+    boost::system::error_code ec;
+    fs::create_directories(tilename.parent_path(), ec);
+
     m.resize(256,256);
     m.zoom_to_box(tile2prjbounds(prj,x,y,z));
 
@@ -125,16 +148,26 @@ void render(Map &m, projectionconfig *prj, const string& outputdir, int x, int y
     mapnik::agg_renderer<mapnik::image_rgba8> ren(m,buf);
     ren.apply(); // <-- Here's where the map is rendered
 
-    std::ostringstream o;
-    o << outputdir << "/" << z;
-    makedir(o.str());
-    o << "/" << x;
-    makedir(o.str());
-    o << "/" << y << ".png";
 
     mapnik::image_view<mapnik::image_rgba8> v1(0, 0, 256, 256, buf);
     struct mapnik::image_view_any view(v1);
-    mapnik::save_to_file(view, o.str(), "png256");
+    string data = mapnik::save_to_string(view, "png256");
+
+    unsigned char hash[16];
+    //mbedtls_md(mbedtls_md_info_from_type(MBEDTLS_MD_MD5),
+    mbedtls_md5(reinterpret_cast<const unsigned char*>(data.c_str()),data.size(),hash);
+
+    fs::path image(outputdir);
+    image = image / hexdigest(hash) / ".png";
+    if (fs::exists(image))
+        return;
+
+    fs::ofstream f;
+    f.open(image);
+    f.write(data.c_str(), data.size());
+    f.close();
+
+    //mapnik::save_to_file(view, tilename, "png256");
 }
 
 struct tile {
@@ -146,11 +179,35 @@ struct tile {
 std::atomic_int tilecount;
 std::atomic_int finished_threads;
 
-void render_thread(const vector<tile>& tiles, const string& outputdir, const string& xml) {
+vector<tile> tiles;
+vector<tile>::iterator next_tile;
+std::mutex next_tile_mutex;
+
+vector<tile>::iterator get_next_tile() {
+    std::lock_guard<std::mutex> lock(next_tile_mutex);
+
+    //cout << "next_tile - tiles.begin(): " << next_tile - tiles.begin() << endl;
+    if (next_tile == tiles.end())
+        return tiles.end();
+    auto r = next_tile;
+    ++next_tile;
+    return r;
+}
+
+void render_thread(const string& outputdir, const string& xml) {
     Map m;
     mapnik::load_map(m,xml);
 
-    for (const auto& t: tiles) {
+    while (true) {
+        auto i = get_next_tile();
+        if (i == tiles.end())
+            break;
+        const tile& t = *i;
+        //cout << "thread " << std::this_thread::get_id() << " ";
+        //cout << "rendering " << outputdir
+        //     << "/" << t.z
+        //     << "/" << t.x
+        //     << "/" << t.y << ".png" << endl;
         try {
             render(m,get_projection(m.srs().c_str()),outputdir,t.x,t.y,t.z);
         } catch (std::exception e) {
@@ -228,12 +285,13 @@ int main(int argc, char *argv[])
     const char *plugins_dir = "/usr/lib/mapnik/3.0/input";
     mapnik::datasource_cache::instance().register_datasources(plugins_dir);
 
-    string tiles_dir = args.output_dir + "/tiles";
-    makedir(args.output_dir + "/tiles");
-    //makedir(args.output_dir + "/images");
+    string tiles_dir = args.output_dir + "/links";
+    string images_dir = args.output_dir + "/images";
+    boost::system::error_code ec;
+    fs::create_directories(tiles_dir, ec);
+    fs::create_directories(images_dir, ec);
 
     string line;
-    vector<tile> tiles;
     while (true) {
         std::getline(std::cin, line);
         if (std::cin.eof())
@@ -251,19 +309,20 @@ int main(int argc, char *argv[])
 
     tilecount = 0;
     finished_threads = 0;
+    next_tile = tiles.begin();
 
     int thread_count = args.threads;
     std::thread threads[thread_count];
 
     for (int i=0; i<thread_count; i++) {
-        auto from = tiles.begin() + i * tiles.size() / thread_count;
-        auto to = tiles.begin() + (i + 1) * tiles.size() / thread_count;
+//        auto from = tiles.begin() + i * tiles.size() / thread_count;
+//        auto to = tiles.begin() + (i + 1) * tiles.size() / thread_count;
 
-        if (i == thread_count - 1) {
-            to = tiles.end();
-        }
+//        if (i == thread_count - 1) {
+//            to = tiles.end();
+//        }
 
-        threads[i] = std::thread { render_thread, vector<tile>(from, to), tiles_dir, args.xml };
+        threads[i] = std::thread { render_thread, tiles_dir, args.xml };
     }
 
     std::chrono::milliseconds d(500);
