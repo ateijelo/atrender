@@ -160,7 +160,7 @@ void render(Map &m, projectionconfig *prj, const string& outputdir, int x, int y
 
     auto image = fs::path(outputdir)
             / "images" / (hexdigest(hash) + ".png");
-    cout << "image: " << image << endl;
+    //cout << "image: " << image << endl;
 
     int ofd = open(image.c_str(), O_CREAT | O_EXCL);
     if (ofd > 0)
@@ -178,6 +178,8 @@ void render(Map &m, projectionconfig *prj, const string& outputdir, int x, int y
     } else if (errno != EEXIST) {
         perror((string("Error opening ") + image.string() + "for writing").c_str());
     }
+
+    fs::create_symlink(image, tilename);
 
     //mapnik::save_to_file(view, tilename, "png256");
 }
