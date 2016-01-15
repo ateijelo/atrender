@@ -174,7 +174,7 @@ void render(Map &m, projectionconfig *prj, const string& outputdir, int x, int y
             / "images" / (hexdigest(hash) + ".png");
     //cout << "image: " << image << endl;
 
-    int ofd = open(image.c_str(), O_CREAT | O_EXCL);
+    int ofd = open(image.c_str(), O_CREAT | O_EXCL, 0644);
     if (ofd > 0)
     {
         unique_tiles++;
