@@ -207,7 +207,7 @@ void render(Map &m, projectionconfig *prj, const string& outputdir, int x, int y
     if (args.verbose)
         cout << "creating link: " << tilename << " -> " << image << endl;
     fs::create_symlink(image, tilename, ec);
-    if (ec)
+    if (ec && (boost::system::error_condition(ec.value(), ec.category()).value() != boost::system::errc::file_exists))
         cerr << "creating link failed with: " << ec.message() << endl;
 
     //mapnik::save_to_file(view, tilename, "png256");
