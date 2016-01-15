@@ -193,6 +193,7 @@ void render(Map &m, projectionconfig *prj, const string& outputdir, int x, int y
             if (r == 0) {
                 assert(pos == data.size());
                 assert(b == 0);
+                break;
             }
         }
         close(ofd);
@@ -205,7 +206,9 @@ void render(Map &m, projectionconfig *prj, const string& outputdir, int x, int y
 
     if (args.verbose)
         cout << "creating link: " << tilename << " -> " << image << endl;
-    fs::create_symlink(image, tilename);
+    fs::create_symlink(image, tilename, ec);
+    if (ec)
+        cerr << "creating link failed with: " << ec.message() << endl;
 
     //mapnik::save_to_file(view, tilename, "png256");
 }
