@@ -174,7 +174,7 @@ void render(Map &m, projectionconfig *prj, const string& outputdir, int x, int y
             }
             b -= r;
         }
-        write(ofd, data.c_str(), data.size());
+	close(ofd);
     } else if (errno != EEXIST) {
         perror((string("Error opening ") + image.string() + "for writing").c_str());
     }
