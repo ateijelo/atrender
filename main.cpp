@@ -35,6 +35,7 @@
 #define ATRENDER_VERSION "0.1"
 
 namespace fs = boost::filesystem;
+namespace sys = boost::system;
 
 using std::cerr;
 using std::cout;
@@ -144,10 +145,10 @@ void render(Map &m, projectionconfig *prj, const string& outputdir, int x, int y
     o << outputdir << "/links/" << z << "/" << x << "/" << y << ".png";
     fs::path tilename(o.str());
 
-    if (fs::exists(tilename))
+    if (fs::is_symlink(tilename))
         return;
 
-    boost::system::error_code ec;
+    sys::error_code ec;
     fs::create_directories(tilename.parent_path(), ec);
 
     m.resize(256,256);
@@ -160,7 +161,6 @@ void render(Map &m, projectionconfig *prj, const string& outputdir, int x, int y
     mapnik::image_rgba8 buf(RENDER_SIZE, RENDER_SIZE);
     mapnik::agg_renderer<mapnik::image_rgba8> ren(m,buf);
     ren.apply(); // <-- Here's where the map is rendered
-
 
     mapnik::image_view<mapnik::image_rgba8> v1(0, 0, 256, 256, buf);
     struct mapnik::image_view_any view(v1);
@@ -207,7 +207,7 @@ void render(Map &m, projectionconfig *prj, const string& outputdir, int x, int y
     if (args.verbose)
         cout << "creating link: " << tilename << " -> " << image << endl;
     fs::create_symlink(image, tilename, ec);
-    if (ec && (boost::system::error_condition(ec.value(), ec.category()).value() != boost::system::errc::file_exists))
+    if (ec && (ec.default_error_condition() != sys::errc::file_exists))
         cerr << "creating link failed with: " << ec.message() << endl;
 
     //mapnik::save_to_file(view, tilename, "png256");
