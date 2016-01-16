@@ -206,7 +206,8 @@ void render(Map &m, projectionconfig *prj, const string& outputdir, int x, int y
 
     if (args.verbose)
         cout << "creating link: " << tilename << " -> " << image << endl;
-    fs::create_symlink(image, tilename, ec);
+    string target = string("../../../") + hexdigest(hash) + ".png";
+    fs::create_symlink(target, tilename, ec);
     if (ec && (ec.default_error_condition() != sys::errc::file_exists))
         cerr << "creating link failed with: " << ec.message() << endl;
 
