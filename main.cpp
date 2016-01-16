@@ -8,7 +8,9 @@
 #include <atomic>
 #include <chrono>
 #include <sstream>
+#include <iomanip>
 #include <iostream>
+#include <algorithm>
 #include <system_error>
 
 #include <mapnik/map.hpp>
@@ -138,6 +140,7 @@ struct Args
 Args args;
 
 std::atomic_int unique_tiles;
+std::atomic_int rendered_tiles;
 
 void render(Map &m, projectionconfig *prj, const string& outputdir, int x, int y, int z)
 {
@@ -161,6 +164,7 @@ void render(Map &m, projectionconfig *prj, const string& outputdir, int x, int y
     mapnik::image_rgba8 buf(RENDER_SIZE, RENDER_SIZE);
     mapnik::agg_renderer<mapnik::image_rgba8> ren(m,buf);
     ren.apply(); // <-- Here's where the map is rendered
+    rendered_tiles++;
 
     mapnik::image_view<mapnik::image_rgba8> v1(0, 0, 256, 256, buf);
     struct mapnik::image_view_any view(v1);
@@ -204,14 +208,12 @@ void render(Map &m, projectionconfig *prj, const string& outputdir, int x, int y
             cout << "already existed: " << image << endl;
     }
 
+    string target = string("../../../images/") + hexdigest(hash) + ".png";
     if (args.verbose)
-        cout << "creating link: " << tilename << " -> " << image << endl;
-    string target = string("../../../") + hexdigest(hash) + ".png";
+        cout << "creating link: " << tilename << " -> " << target << endl;
     fs::create_symlink(target, tilename, ec);
     if (ec && (ec.default_error_condition() != sys::errc::file_exists))
         cerr << "creating link failed with: " << ec.message() << endl;
-
-    //mapnik::save_to_file(view, tilename, "png256");
 }
 
 struct tile {
@@ -281,7 +283,7 @@ int parse_args(int argc, char *argv[], Args *args) {
                     "directory to store rendered tiles")
             (",n", po::value<int>(&args->threads)->default_value(1),
                     "number of threads")
-            (",v", po::value<bool>(&args->verbose)->default_value(false),
+            (",v", po::bool_switch(&args->verbose)->default_value(false),
                     "be verbose")
             ;
     po::positional_options_description pod;
@@ -311,6 +313,25 @@ int parse_args(int argc, char *argv[], Args *args) {
     }
 
     return 0;
+}
+
+using std::flush;
+using std::setw;
+using std::left;
+using std::setfill;
+
+string pretty(double seconds)
+{
+    if (seconds < 0)
+        return "--:--:--";
+    int secs = int(seconds) % 60;
+    int mins = (int(seconds) / 60) % 60;
+    int hours = int(seconds) / 3600;
+    std::ostringstream o;
+    o << hours;
+    o << ":" << setw(2) << setfill('0') << mins;
+    o << ":" << setw(2) << setfill('0') << secs;
+    return o.str();
 }
 
 int main(int argc, char *argv[])
@@ -344,31 +365,47 @@ int main(int argc, char *argv[])
         tiles.push_back({x,y,z});
     }
 
+    // this makes the ETA more stable
+    // and we intentionally won't seed it, so that
+    // if you interrupt a run, the next one will
+    // skip all the already rendered tiles first,
+    // since the random order will be the same
+    std::random_shuffle(tiles.begin(), tiles.end());
+
     tilecount = 0;
     finished_threads = 0;
     unique_tiles = 0;
+    rendered_tiles = 0;
     next_tile = tiles.begin();
 
     int thread_count = args.threads;
     std::thread threads[thread_count];
 
     for (int i=0; i<thread_count; i++) {
-//        auto from = tiles.begin() + i * tiles.size() / thread_count;
-//        auto to = tiles.begin() + (i + 1) * tiles.size() / thread_count;
-
-//        if (i == thread_count - 1) {
-//            to = tiles.end();
-//        }
-
         threads[i] = std::thread { render_thread, args.output_dir, args.xml };
     }
 
-    std::chrono::milliseconds d(500);
+    std::chrono::milliseconds d(1000);
+    std::this_thread::sleep_for(d);
+    auto start = std::chrono::system_clock::now();
+    cout << "Tiles       Rendered    Unique      Tiles/sec  Elapsed     ETA       " << endl;
+    cout << "----------  ----------  ----------  ---------  ----------  ----------" << endl;
     while (true)
     {
         std::this_thread::sleep_for(d);
-        printf("Rendered %d tiles (%d unique)    \r", int(tilecount), int(unique_tiles));
-        fflush(stdout);
+        auto now = std::chrono::system_clock::now();
+        std::chrono::duration<double> elapsed = now - start;
+
+        double speed = rendered_tiles / elapsed.count();
+        double eta = -1;
+        if (speed != 0)
+            eta = 1 + (tiles.size() - tilecount) / speed;
+
+        printf("%-10d  %-10d  ", int(tilecount), int(rendered_tiles));
+        printf("%-10d  %-9.1f  ", int(unique_tiles), speed);
+        cout << left << setw(12) << pretty(elapsed.count()) << pretty(eta);
+        cout << "            \r" << flush;
+
         if (finished_threads >= thread_count)
             break;
     }
