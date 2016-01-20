@@ -388,8 +388,16 @@ int main(int argc, char *argv[])
     std::chrono::milliseconds d(1000);
     std::this_thread::sleep_for(d);
     auto start = std::chrono::system_clock::now();
-    cout << "Tiles       Rendered    Unique      Tiles/sec  Elapsed     ETA       " << endl;
-    cout << "----------  ----------  ----------  ---------  ----------  ----------" << endl;
+/*
+Tiles     Processed Rendered  Unique    Tiles/sec Elapsed    ETA
+--------- --------- --------- --------- --------- ---------- ----------
+123456789 123456789 123456789 123456789 1234567.9 1234:67:90 1234:67:90
+*/
+
+    cout << "Tiles     Processed Rendered  Unique    Tiles/sec Elapsed    ETA       " << endl;
+    cout << "--------- --------- --------- --------- --------- ---------- ----------" << endl;
+
+    int total_tiles = tiles.size();
     while (true)
     {
         std::this_thread::sleep_for(d);
@@ -399,11 +407,11 @@ int main(int argc, char *argv[])
         double speed = rendered_tiles / elapsed.count();
         double eta = -1;
         if (speed != 0)
-            eta = 1 + (tiles.size() - tilecount) / speed;
+            eta = 1 + (total_tiles - tilecount) / speed;
 
-        printf("%-10d  %-10d  ", int(tilecount), int(rendered_tiles));
-        printf("%-10d  %-9.1f  ", int(unique_tiles), speed);
-        cout << left << setw(12) << pretty(elapsed.count()) << pretty(eta);
+        printf("%-9d %-9d %-9d ", total_tiles, int(tilecount), int(rendered_tiles));
+        printf("%-9d %-9.1f ", int(unique_tiles), speed);
+        cout << left << setw(11) << pretty(elapsed.count()) << pretty(eta);
         cout << "            \r" << flush;
 
         if (finished_threads >= thread_count)
