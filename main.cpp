@@ -135,6 +135,7 @@ struct Args
     int threads;
     string output_dir;
     bool verbose;
+    int subdirs;
 };
 
 Args args;
@@ -142,7 +143,7 @@ Args args;
 std::atomic_int unique_tiles;
 std::atomic_int rendered_tiles;
 
-void render(Map &m, projectionconfig *prj, const string& outputdir, int x, int y, int z)
+void render(Map &m, projectionconfig *prj, const string& outputdir, int subdirs, int x, int y, int z)
 {
     std::ostringstream o;
     o << outputdir << "/links/" << z << "/" << x << "/" << y << ".png";
@@ -173,10 +174,19 @@ void render(Map &m, projectionconfig *prj, const string& outputdir, int x, int y
     unsigned char hash[16];
     //mbedtls_md(mbedtls_md_info_from_type(MBEDTLS_MD_MD5),
     mbedtls_md5(reinterpret_cast<const unsigned char*>(data.c_str()),data.size(),hash);
+    
+    auto hd = hexdigest(hash);
+    string imgpath = "";
+    for (int i=0; i<subdirs; i++) {
+        imgpath += hd.substr(i*2, 2) + "/";
+    }
+    imgpath += hd + ".png";
 
-    auto image = fs::path(outputdir)
-            / "images" / (hexdigest(hash) + ".png");
+    auto image = fs::path(outputdir) / "images" / imgpath;
+    // / (hexdigest(hash) + ".png");
     //cout << "image: " << image << endl;
+    if (subdirs > 0)
+        fs::create_directories(image.parent_path());
 
     int ofd = open(image.c_str(), O_CREAT | O_EXCL | O_WRONLY, 0644);
     if (ofd > 0)
@@ -208,7 +218,7 @@ void render(Map &m, projectionconfig *prj, const string& outputdir, int x, int y
             cout << "already existed: " << image << endl;
     }
 
-    string target = string("../../../images/") + hexdigest(hash) + ".png";
+    string target = string("../../../images/") + imgpath;
     if (args.verbose)
         cout << "creating link: " << tilename << " -> " << target << endl;
     fs::create_symlink(target, tilename, ec);
@@ -240,7 +250,7 @@ vector<tile>::iterator get_next_tile() {
     return r;
 }
 
-void render_thread(const string& outputdir, const string& xml) {
+void render_thread(const string& outputdir, int subdirs, const string& xml) {
     Map m;
     mapnik::load_map(m,xml);
 
@@ -255,7 +265,7 @@ void render_thread(const string& outputdir, const string& xml) {
         //     << "/" << t.x
         //     << "/" << t.y << ".png" << endl;
         try {
-            render(m,get_projection(m.srs().c_str()),outputdir,t.x,t.y,t.z);
+            render(m, get_projection(m.srs().c_str()), outputdir, subdirs, t.x, t.y, t.z);
         } catch (std::exception e) {
             cerr << "rendering " << outputdir
                  << "/" << t.z
@@ -283,8 +293,14 @@ int parse_args(int argc, char *argv[], Args *args) {
                     "directory to store rendered tiles")
             (",n", po::value<int>(&args->threads)->default_value(1),
                     "number of threads")
+            ("subdirs,s", po::value<int>(&args->subdirs)->default_value(0),
+                    "avoid too many images per folder by spreading output files "
+                    "in subdirectories based on prefixes of the file names; each "
+                    "subdir uses two characters; using -s 2 does this:\n"
+                    "    abcdefgh.png -> ab/cd/abcdefgh.png")
             (",v", po::bool_switch(&args->verbose)->default_value(false),
                     "be verbose")
+
             ;
     po::positional_options_description pod;
     pod.add("input", -1);
@@ -293,6 +309,9 @@ int parse_args(int argc, char *argv[], Args *args) {
     po::store(po::command_line_parser(argc, argv).
               options(desc).positional(pod).run(), vm);
     po::notify(vm);
+
+    if (args->subdirs > 16)
+        args->subdirs = 16;
 
     if (vm.count("help")) {
         cout << desc << endl;
@@ -311,6 +330,7 @@ int parse_args(int argc, char *argv[], Args *args) {
         cout << "See " << argv[0] << " -h" << endl;
         return 1;
     }
+
 
     return 0;
 }
@@ -382,7 +402,7 @@ int main(int argc, char *argv[])
     std::thread threads[thread_count];
 
     for (int i=0; i<thread_count; i++) {
-        threads[i] = std::thread { render_thread, args.output_dir, args.xml };
+        threads[i] = std::thread { render_thread, args.output_dir, args.subdirs, args.xml };
     }
 
     std::chrono::milliseconds d(1000);
