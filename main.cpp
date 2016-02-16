@@ -1,6 +1,7 @@
 #include <stdio.h>
-#include <fcntl.h>
 
+#include <fstream>
+#include <memory>
 #include <mutex>
 #include <thread>
 #include <vector>
@@ -25,10 +26,6 @@
 #include <mapnik/datasource_cache.hpp>
 
 #include <boost/program_options.hpp>
-#include <boost/filesystem.hpp>
-#include <boost/filesystem/fstream.hpp>
-
-#include <mbedtls/md5.h>
 
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -36,8 +33,12 @@
 
 #define ATRENDER_VERSION "0.1"
 
-namespace fs = boost::filesystem;
-namespace sys = boost::system;
+#include "tilestore.h"
+#include "directorytilestore.h"
+#include "mbtiles.h"
+
+//namespace fs = boost::filesystem;
+//namespace sys = boost::system;
 
 using std::cerr;
 using std::cout;
@@ -116,47 +117,30 @@ mapnik::box2d<double> tile2prjbounds(struct projectionconfig * prj, int x, int y
     return  bbox;
 }
 
-string hexdigest(const unsigned char *digest)
-{
-    string r;
-    for (int i=0; i<16; i++)
-    {
-        unsigned char low_nibble = digest[i] & 15;
-        unsigned char high_nibble = digest[i] >> 4;
-        r += "0123456789abcdef"[high_nibble];
-        r += "0123456789abcdef"[low_nibble];
-    }
-    return r;
-}
-
 struct Args
 {
+    string input;
     string xml;
     int threads;
     string output_dir;
+    string mbtiles;
     bool verbose;
     int subdirs;
 };
 
 Args args;
 
-std::atomic_int unique_tiles;
+//std::atomic_int unique_tiles;
 std::atomic_int rendered_tiles;
 
-void render(Map &m, projectionconfig *prj, const string& outputdir, int subdirs, int x, int y, int z)
-{
-    std::ostringstream o;
-    o << outputdir << "/links/" << z << "/" << x << "/" << y << ".png";
-    fs::path tilename(o.str());
 
-    if (fs::is_symlink(tilename))
+void render(Map &m, projectionconfig *prj, TileStore& store, const tile& t)
+{
+    if (store.alreadyRendered(t))
         return;
 
-    sys::error_code ec;
-    fs::create_directories(tilename.parent_path(), ec);
-
     m.resize(256,256);
-    m.zoom_to_box(tile2prjbounds(prj,x,y,z));
+    m.zoom_to_box(tile2prjbounds(prj,t.x,t.y,t.z));
 
     if (m.buffer_size() == 0) { // Only set buffer size if the buffer size isn't explicitly set in the mapnik stylesheet.
         m.set_buffer_size(128);
@@ -170,67 +154,10 @@ void render(Map &m, projectionconfig *prj, const string& outputdir, int subdirs,
     mapnik::image_view<mapnik::image_rgba8> v1(0, 0, 256, 256, buf);
     struct mapnik::image_view_any view(v1);
     string data = mapnik::save_to_string(view, "png256");
+    //cout << "first rendered byte is at " << (void*)(&(data.at(0))) << endl;
 
-    unsigned char hash[16];
-    //mbedtls_md(mbedtls_md_info_from_type(MBEDTLS_MD_MD5),
-    mbedtls_md5(reinterpret_cast<const unsigned char*>(data.c_str()),data.size(),hash);
-    
-    auto hd = hexdigest(hash);
-    string imgpath = "";
-    for (int i=0; i<subdirs; i++) {
-        imgpath += hd.substr(i*2, 2) + "/";
-    }
-    imgpath += hd + ".png";
-
-    auto image = fs::path(outputdir) / "images" / imgpath;
-    // / (hexdigest(hash) + ".png");
-    //cout << "image: " << image << endl;
-    if (subdirs > 0)
-        fs::create_directories(image.parent_path());
-
-    int ofd = open(image.c_str(), O_CREAT | O_EXCL | O_WRONLY, 0644);
-    if (ofd > 0)
-    {
-        unique_tiles++;
-        if (args.verbose)
-            cout << "writing image: " << image << " (" << data.size() << " bytes)" << endl;
-        size_t b = data.size();
-        size_t pos = 0;
-        while (b > 0) {
-            ssize_t r = write(ofd, data.c_str() + pos, std::min<size_t>(8192, data.size() - pos));
-            if (r < 0) {
-                perror((string("Error writing to ") + image.string()).c_str());
-                break;
-            }
-            pos += r;
-            b -= r;
-            if (r == 0) {
-                assert(pos == data.size());
-                assert(b == 0);
-                break;
-            }
-        }
-        close(ofd);
-    } else if (errno != EEXIST) {
-        perror((string("Error opening ") + image.string() + "for writing").c_str());
-    } else if (errno == EEXIST) {
-        if (args.verbose)
-            cout << "already existed: " << image << endl;
-    }
-
-    string target = string("../../../images/") + imgpath;
-    if (args.verbose)
-        cout << "creating link: " << tilename << " -> " << target << endl;
-    fs::create_symlink(target, tilename, ec);
-    if (ec && (ec.default_error_condition() != sys::errc::file_exists))
-        cerr << "creating link failed with: " << ec.message() << endl;
+    store.storeTile(t, std::move(data));
 }
-
-struct tile {
-    int x;
-    int y;
-    int z;
-};
 
 std::atomic_int tilecount;
 std::atomic_int finished_threads;
@@ -250,7 +177,7 @@ vector<tile>::iterator get_next_tile() {
     return r;
 }
 
-void render_thread(const string& outputdir, int subdirs, const string& xml) {
+void render_thread(const std::shared_ptr<TileStore> store, const string& xml) {
     Map m;
     mapnik::load_map(m,xml);
 
@@ -264,13 +191,11 @@ void render_thread(const string& outputdir, int subdirs, const string& xml) {
         //     << "/" << t.z
         //     << "/" << t.x
         //     << "/" << t.y << ".png" << endl;
+        //cout << "store.use_count(): " << store.use_count() << endl;
         try {
-            render(m, get_projection(m.srs().c_str()), outputdir, subdirs, t.x, t.y, t.z);
+            render(m, get_projection(m.srs().c_str()), *store, t);
         } catch (std::exception e) {
-            cerr << "rendering " << outputdir
-                 << "/" << t.z
-                 << "/" << t.x
-                 << "/" << t.y << ".png failed with:" << endl;
+            cerr << "rendering tile " << t << "failed with:" << endl;
             cerr << e.what() << endl;
         }
         tilecount++;
@@ -287,23 +212,28 @@ int parse_args(int argc, char *argv[], Args *args) {
     po::options_description desc(usage, 90);
     desc.add_options()
             ("help,h", "print this help message")
+            (",i", po::value<string>(&args->input),
+                    "input file with tiles as specified below")
             (",x", po::value<string>(&args->xml),
                     "mapnik XML file")
-            (",o", po::value<string>(&args->output_dir)->default_value(".","current directory"),
-                    "directory to store rendered tiles")
             (",n", po::value<int>(&args->threads)->default_value(1),
                     "number of threads")
+            (",d", po::value<string>(&args->output_dir),
+                    "save tiles to given directory")
             ("subdirs,s", po::value<int>(&args->subdirs)->default_value(0),
-                    "avoid too many images per folder by spreading output files "
-                    "in subdirectories based on prefixes of the file names; each "
-                    "subdir uses two characters; using -s 2 does this:\n"
+                    "when using an output directory (-d) to store tiles avoid too "
+                    "many images per folder by spreading files in subdirectories "
+                    "based on prefixes of the file names; each subdir uses two "
+                    "characters; using -s 2 does this:\n"
                     "    abcdefgh.png -> ab/cd/abcdefgh.png")
+            ("mbtiles,m", po::value<string>(&args->mbtiles),
+                    "save tiles as an MBTiles file")
             (",v", po::bool_switch(&args->verbose)->default_value(false),
                     "be verbose")
 
             ;
     po::positional_options_description pod;
-    pod.add("input", -1);
+    pod.add("-i", 1);
 
     po::variables_map vm;
     po::store(po::command_line_parser(argc, argv).
@@ -315,7 +245,7 @@ int parse_args(int argc, char *argv[], Args *args) {
 
     if (vm.count("help")) {
         cout << desc << endl;
-        cout << "Tiles are read from STDIN in the following format:" << endl;
+        cout << "Input tiles file must be in the following format:" << endl;
         cout << endl;
         cout << "  Z/X/Y" << endl;
         cout << "  Z/X/Y" << endl;
@@ -325,12 +255,23 @@ int parse_args(int argc, char *argv[], Args *args) {
         return 1;
     }
 
+    if (vm.count("-i") == 0) {
+        cout << "Input tiles file is required (one per line in Z/X/Y format)." << endl;
+        cout << "See " << argv[0] << " -h" << endl;
+        return 1;
+    }
+
     if (vm.count("-x") == 0) {
         cout << "You must supply a mapnik xml file with -x" << endl;
         cout << "See " << argv[0] << " -h" << endl;
         return 1;
     }
 
+    if (vm.count("-m") > 0 && vm.count("-d") > 0) {
+        cout << "Options -m and -d are exclusive" << endl;
+        cout << "See " << argv[0] << " -h" << endl;
+        return 1;
+    }
 
     return 0;
 }
@@ -348,7 +289,7 @@ string pretty(double seconds)
     int mins = (int(seconds) / 60) % 60;
     int hours = int(seconds) / 3600;
     std::ostringstream o;
-    o << hours;
+    o << setw(2) << setfill('0') << hours;
     o << ":" << setw(2) << setfill('0') << mins;
     o << ":" << setw(2) << setfill('0') << secs;
     return o.str();
@@ -363,16 +304,29 @@ int main(int argc, char *argv[])
     const char *plugins_dir = "/usr/lib/mapnik/3.0/input";
     mapnik::datasource_cache::instance().register_datasources(plugins_dir);
 
-    string tiles_dir = args.output_dir + "/links";
-    string images_dir = args.output_dir + "/images";
-    boost::system::error_code ec;
-    fs::create_directories(tiles_dir, ec);
-    fs::create_directories(images_dir, ec);
+    std::shared_ptr<TileStore> store;
+
+    if (!args.mbtiles.empty()) {
+        store = std::make_shared<MBTilesTileStore>(
+                args.mbtiles, args.verbose
+        );
+    }
+    if (!args.output_dir.empty()) {
+        store = std::make_shared<DirectoryTileStore>(
+                args.output_dir, args.subdirs, args.verbose
+        );
+    }
+    if (!store) {
+        cout << "You must specify a place to save tiles to (-m or -d)" << endl;
+        cout << "See " << argv[0] << " -h" << endl;
+        return 1;
+    }
 
     string line;
+    std::ifstream input(args.input);
     while (true) {
-        std::getline(std::cin, line);
-        if (std::cin.eof())
+        std::getline(input, line);
+        if (input.eof())
             break;
         std::istringstream linestream(line);
         int x,y,z; char c,d;
@@ -394,7 +348,7 @@ int main(int argc, char *argv[])
 
     tilecount = 0;
     finished_threads = 0;
-    unique_tiles = 0;
+
     rendered_tiles = 0;
     next_tile = tiles.begin();
 
@@ -402,40 +356,62 @@ int main(int argc, char *argv[])
     std::thread threads[thread_count];
 
     for (int i=0; i<thread_count; i++) {
-        threads[i] = std::thread { render_thread, args.output_dir, args.subdirs, args.xml };
+        threads[i] = std::thread { render_thread, store, args.xml };
     }
 
-    std::chrono::milliseconds d(1000);
-    std::this_thread::sleep_for(d);
-    auto start = std::chrono::system_clock::now();
 /*
 Tiles     Processed Rendered  Unique    Tiles/sec Elapsed    ETA
 --------- --------- --------- --------- --------- ---------- ----------
 123456789 123456789 123456789 123456789 1234567.9 1234:67:90 1234:67:90
 */
 
-    cout << "Tiles     Processed Rendered  Unique    Tiles/sec Elapsed    ETA       " << endl;
-    cout << "--------- --------- --------- --------- --------- ---------- ----------" << endl;
+    std::chrono::milliseconds d(1000);
+    auto start = std::chrono::system_clock::now();
 
     int total_tiles = tiles.size();
+    int moveup = 1; bool first = true;
     while (true)
     {
         std::this_thread::sleep_for(d);
+//        cout << "Tiles     Processed Rendered  Unique    Tiles/sec Elapsed    ETA       " << endl;
+//        cout << "--------- --------- --------- --------- --------- ---------- ----------" << endl;
         auto now = std::chrono::system_clock::now();
         std::chrono::duration<double> elapsed = now - start;
+
+        if (!first) {
+            for (int i=0; i<moveup; i++)
+                printf("\033[A");
+            printf("\r");
+        }
+        first = false;
 
         double speed = rendered_tiles / elapsed.count();
         double eta = -1;
         if (speed != 0)
             eta = 1 + (total_tiles - tilecount) / speed;
 
-        printf("%-9d %-9d %-9d ", total_tiles, int(tilecount), int(rendered_tiles));
-        printf("%-9d %-9.1f ", int(unique_tiles), speed);
-        cout << left << setw(11) << pretty(elapsed.count()) << pretty(eta);
-        cout << "            \r" << flush;
+        printf("Total: %d  Processed: %d  Rendered: %d  Unique: %d\n",
+               total_tiles, int(tilecount),
+               int(rendered_tiles), store->unique_tiles());
 
-        if (finished_threads >= thread_count)
+        printf("Speed: %.1f  ", speed);
+        cout << "Elapsed: " << pretty(elapsed.count()) << "  "
+             << "ETA: " << pretty(eta);
+
+        if (!args.mbtiles.empty()) {
+            const MBTilesTileStore* s = static_cast<MBTilesTileStore*>(store.get());
+            printf("\nWrite queue: %d tiles", s->queue_size());
+            moveup = 2;
+        }
+
+        if (finished_threads >= thread_count && store->finished())
             break;
+
+//        if (!args.mbtiles.empty()) {
+//            printf("\033[A");
+//        }
+
+//        printf("\033[A\033[A\r");
     }
     cout << endl;
 
