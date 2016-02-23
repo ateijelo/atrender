@@ -1,3 +1,19 @@
+// This file is part of ATRender, a fast & simple mapnik tile render
+// Copyright (C) 2016  Andy Teijelo <github.com/ateijelo>
+
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
 #include <stdio.h>
 
 #include <fstream>
@@ -215,7 +231,7 @@ int parse_args(int argc, char *argv[], Args *args) {
             (",i", po::value<string>(&args->input),
                     "input file with tiles as specified below")
             (",x", po::value<string>(&args->xml),
-                    "mapnik XML file")
+                    "mapnik XML stylesheet")
             (",n", po::value<int>(&args->threads)->default_value(1),
                     "number of threads")
             (",d", po::value<string>(&args->output_dir),
@@ -262,7 +278,7 @@ int parse_args(int argc, char *argv[], Args *args) {
     }
 
     if (vm.count("-x") == 0) {
-        cout << "You must supply a mapnik xml file with -x" << endl;
+        cout << "You must supply a mapnik xml stylesheet with -x" << endl;
         cout << "See " << argv[0] << " -h" << endl;
         return 1;
     }
@@ -359,12 +375,6 @@ int main(int argc, char *argv[])
         threads[i] = std::thread { render_thread, store, args.xml };
     }
 
-/*
-Tiles     Processed Rendered  Unique    Tiles/sec Elapsed    ETA
---------- --------- --------- --------- --------- ---------- ----------
-123456789 123456789 123456789 123456789 1234567.9 1234:67:90 1234:67:90
-*/
-
     std::chrono::milliseconds d(1000);
     auto start = std::chrono::system_clock::now();
 
@@ -373,8 +383,6 @@ Tiles     Processed Rendered  Unique    Tiles/sec Elapsed    ETA
     while (true)
     {
         std::this_thread::sleep_for(d);
-//        cout << "Tiles     Processed Rendered  Unique    Tiles/sec Elapsed    ETA       " << endl;
-//        cout << "--------- --------- --------- --------- --------- ---------- ----------" << endl;
         auto now = std::chrono::system_clock::now();
         std::chrono::duration<double> elapsed = now - start;
 
@@ -406,12 +414,6 @@ Tiles     Processed Rendered  Unique    Tiles/sec Elapsed    ETA
 
         if (finished_threads >= thread_count && store->finished())
             break;
-
-//        if (!args.mbtiles.empty()) {
-//            printf("\033[A");
-//        }
-
-//        printf("\033[A\033[A\r");
     }
     cout << endl;
 
@@ -420,4 +422,3 @@ Tiles     Processed Rendered  Unique    Tiles/sec Elapsed    ETA
 
     return 0;
 }
-
