@@ -35,8 +35,8 @@ This is the output format of tilestache-list
 
  * ATRender was designed to be able to resume an interrupted generation process. It will skip already generated tiles.
 
- * It checks for duplicate tiles during generation and does not store them. It uses an indirection layer to share actual image data between equivalent tiles. In directories this means symbolic links; in .mbtiles files it uses a SQL view.
+ * It checks for duplicate tiles during generation and does not store them. It uses an indirection layer to share actual image data between equivalent tiles. In directories this means symbolic links; in .mbtiles files it follows MapBox's steps and uses a SQL view.
 
 ### License
 
-ATRender is licensed under the GNU General Public License
+ATRender is licensed under the GNU General Public License version 3 or later.

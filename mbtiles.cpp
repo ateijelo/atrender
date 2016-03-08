@@ -39,7 +39,7 @@ MBTilesTileStore::MBTilesTileStore(const string &mbtiles_file, bool verbose)
     if (rc != 0)
     {
         sqlite3_close(db);
-        throw std::runtime_error("Error opening database");
+         std::runtime_error("Error opening database");
     }
     char *errmsg;
     rc = sqlite3_exec(db,
@@ -221,6 +221,7 @@ void MBTilesTileStore::write_loop()
 
     while (true) {
         sqlite3_exec(db, "BEGIN", nullptr, nullptr, nullptr);
+        _queue_size = insert_queue.size();
         while (!insert_queue.empty()) {
             _finished = false;
             const InsertOp& op = insert_queue.front();
@@ -246,19 +247,12 @@ void MBTilesTileStore::exec(const InsertOp &op)
 {
     const tile& t = op.t;
     const string& data = op.data;
+    int tile_id = op.id;
+    const string& hash = op.hash;
 
     int rc;
 
-    auto hash = md5(data);
-    auto it = idmap.find(hash);
-    int tile_id;
-    if (it == idmap.end()) {
-        tile_id = next_tile_id;
-        next_tile_id++;
-        _unique_tiles++;
-
-        idmap.insert({hash, tile_id});
-
+    if (!data.empty()) {
         if (insert_into_idmap == nullptr) {
             if (sqlite3_prepare_v2(db,
                     "INSERT INTO idmap VALUES(?, ?);", -1,
@@ -299,28 +293,7 @@ void MBTilesTileStore::exec(const InsertOp &op)
         rc = sqlite3_step(insert_into_images);
         if (rc != SQLITE_DONE)
             db_error("error stepping through 'insert into images' query");
-
-    } else {
-        tile_id = it->second;
     }
-
-//    sqlite3_stmt *stmt;
-//    if (sqlite3_prepare_v2(db, "SELECT tile_id FROM idmap WHERE md5 = ?;",
-//            -1, &stmt, nullptr) != SQLITE_OK)
-//        db_error("error preparing select from idmap query");
-
-//    if (sqlite3_bind_text(stmt, 1, hash.c_str(), hash.size(), SQLITE_STATIC)
-//            != SQLITE_OK)
-//        db_error("error binding select from idmap query");
-
-//    rc = sqlite3_step(stmt);
-//    if (!(rc == SQLITE_ROW || rc == SQLITE_DONE))
-//        db_error("error stepping through query");
-
-//    int tile_id = -1;
-//    if (rc == SQLITE_ROW)
-//       tile_id = sqlite3_column_int(stmt, 0);
-//    sqlite3_finalize(stmt);
 
     //cout << "idmap[" << hash << "] = " << tile_id << endl;
     if (insert_into_map == nullptr) {
@@ -351,15 +324,57 @@ void MBTilesTileStore::exec(const InsertOp &op)
 //        return StoreResult::Duplicate;
 }
 
-void MBTilesTileStore::storeTile(const tile &t, std::__cxx11::string &&data)
+void MBTilesTileStore::storeTile(const tile &t, string &&data)
 {
+    auto hash = md5(data);
+
+    int tile_id;
+    bool write_data;
+
+    {
+        lock_guard<mutex> guard { idmap_mutex };
+
+        auto it = idmap.find(hash);
+        if (it == idmap.end())
+        {
+            tile_id = next_tile_id;
+            next_tile_id++;
+            _unique_tiles++;
+//            cout << "inserting " << hash << ", " << tile_id << " to idmap" << endl;
+            idmap.insert({hash, tile_id});
+            write_data = true;
+        } else {
+            tile_id = it->second;
+            write_data = false;
+        }
+    }
+
+    string d;
+    if (write_data) {
+        if (postprocess_command.empty()) {
+            d = std::move(data);
+        } else {
+            d = do_postprocess(data, hash + ".png");
+            if (d.empty())
+            {
+                // We'll assume an empty result means an error
+                cerr << "Postprocessing " << hash << ".png yielded 0 bytes, not storing it" << endl;
+                return;
+            }
+        }
+    }
+
     {
         lock_guard<mutex> guard { insert_queue_mutex };
         //cout << "data.length = " << data.length() << endl;
         //cout << "before inserting data.c_str() was " << (void*)(&(data.at(0))) << endl;
         //auto op = InsertOp(t, data);
         //cout << "after constructing op, first byte is at " << (void*)(&(op.data.at(0))) << endl;
-        insert_queue.emplace(t, std::move(data));
+//        cout << "adding tile " << t << " with id " << tile_id << " to the insertion queue" << endl;
+        if (write_data)
+            insert_queue.emplace(t, std::move(d), tile_id, hash);
+        else
+            insert_queue.emplace(t, "", tile_id, "");
         //cout << "after inserting, insert_queue.back().data.at(0) is " << (void*)(&(insert_queue.back().data.at(0))) << endl;
         //cout << (void*)(data.c_str()) << endl;
         //cout << data.empty() << endl;
@@ -374,7 +389,17 @@ void MBTilesTileStore::close()
     write_cond.notify_one();
     write_thread.join();
     if (verbose)
-        cout << "Closing database." << endl;
+    {
+        cout << "Cleaning up, vacuuming & closing database." << endl;
+    }
+
+    char *errmsg;
+    if (sqlite3_exec(db, "DROP TABLE idmap;", nullptr, nullptr, &errmsg))
+        cerr << "Error dropping table idmap: " << errmsg << endl;
+
+    if (sqlite3_exec(db, "VACUUM;", nullptr, nullptr, &errmsg))
+        cerr << "Error vacuuming database: " << errmsg << endl;
+
     sqlite3_close(db);
 }
 
@@ -385,5 +410,6 @@ bool MBTilesTileStore::finished()
 
 int MBTilesTileStore::queue_size() const
 {
-    return insert_queue.size();
+    return _queue_size;
 }
+

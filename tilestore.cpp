@@ -14,9 +14,21 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+#include <boost/filesystem.hpp>
+#include <sstream>
+#include <fstream>
+
 #include "tilestore.h"
 
+namespace fs = boost::filesystem;
+
 using std::string;
+using std::ofstream;
+using std::ifstream;
+using std::ios;
+using std::cout;
+using std::cerr;
+using std::endl;
 
 string hexdigest(const unsigned char *digest)
 {
@@ -32,6 +44,19 @@ string hexdigest(const unsigned char *digest)
     return r;
 }
 
+void TileStore::postprocess(const std::__cxx11::string &command)
+{
+    postprocess_command = command;
+}
+
+void TileStore::tempdir(const std::__cxx11::string &tmpdir)
+{
+    if (tmpdir.empty())
+        _tempdir = fs::temp_directory_path();
+    else
+        _tempdir = tmpdir;
+}
+
 string TileStore::md5(const string &data)
 {
     unsigned char hash[16];
@@ -39,6 +64,31 @@ string TileStore::md5(const string &data)
     mbedtls_md5(reinterpret_cast<const unsigned char*>(data.c_str()),data.size(),hash);
 
     return hexdigest(hash);
+}
+
+string TileStore::do_postprocess(const string &data, const string &filename)
+{
+    fs::path fn = _tempdir / filename;
+
+    ofstream o(fn.string(), ios::binary);
+    o.write(data.c_str(), data.size());
+    o.close();
+
+    string cmd = postprocess_command + ' ' + fn.string();
+    int rc = system(cmd.c_str());
+    if (rc != 0) {
+        cerr << "Command: " << cmd << " failed with status " << rc << endl;
+        return string();
+    }
+
+    ifstream i(fn.string(), ios::binary);
+    std::ostringstream oss;
+    oss << i.rdbuf();
+
+    i.close();
+    fs::remove(fn);
+
+    return oss.str();
 }
 
 std::ostream &operator<<(std::ostream &o, const tile &t) {

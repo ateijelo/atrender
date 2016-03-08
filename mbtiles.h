@@ -32,8 +32,8 @@
 #include "tilestore.h"
 
 struct InsertOp {
-        InsertOp(const tile& t, std::string&& data)
-            : t(t), data(std::move(data))
+        InsertOp(const tile& t, std::string&& data, int id, const std::string& hash)
+            : t(t), data(std::move(data)), id(id), hash(hash)
         {
             //this->data.swap(data);
         }
@@ -41,8 +41,10 @@ struct InsertOp {
 //            std::cout << "deleting op " << t << std::endl;
 //        }
 
-        tile t;
-        std::string data;
+        const tile t;
+        const std::string data;
+        const int id;
+        const std::string hash;
 };
 
 class MBTilesTileStore : public TileStore {
@@ -69,9 +71,10 @@ class MBTilesTileStore : public TileStore {
         std::atomic_bool closing { false };
         sqlite3 *db;
         std::unordered_map<std::string,int> idmap;
+        std::mutex idmap_mutex;
 
         std::unordered_set<uint64_t> rendered_tiles;
-        std::mutex rendered_tiles_mutex;
+//        std::mutex rendered_tiles_mutex;
 
         std::atomic_int _unique_tiles {0};
         int next_tile_id;
@@ -87,6 +90,8 @@ class MBTilesTileStore : public TileStore {
         sqlite3_stmt *insert_into_idmap = nullptr;
         sqlite3_stmt *insert_into_map = nullptr;
         sqlite3_stmt *insert_into_images = nullptr;
+
+        size_t _queue_size = 0;
 };
 
 #endif // MBTILES_H

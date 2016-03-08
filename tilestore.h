@@ -21,6 +21,7 @@
 #include <iostream>
 #include <string>
 #include <mbedtls/md5.h>
+#include <boost/filesystem.hpp>
 
 struct tile {
     int x;
@@ -37,7 +38,14 @@ class TileStore {
         virtual void close() {}
         virtual int unique_tiles() = 0;
         virtual bool finished() { return true; }
+        void postprocess(const std::string& command);
+        void tempdir(const std::string& tmpdir);
         std::string md5(const std::string& data);
+
+    protected:
+        std::string do_postprocess(const std::string& data, const std::__cxx11::string &filename);
+        std::string postprocess_command;
+        boost::filesystem::path _tempdir;
 };
 
 #endif // TILESTORE_H

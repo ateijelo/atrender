@@ -42,6 +42,7 @@
 #include <mapnik/datasource_cache.hpp>
 
 #include <boost/program_options.hpp>
+#include <boost/filesystem.hpp>
 
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -53,7 +54,7 @@
 #include "directorytilestore.h"
 #include "mbtiles.h"
 
-//namespace fs = boost::filesystem;
+namespace fs = boost::filesystem;
 //namespace sys = boost::system;
 
 using std::cerr;
@@ -140,6 +141,8 @@ struct Args
     int threads;
     string output_dir;
     string mbtiles;
+    string postprocess;
+    string tempdir;
     bool verbose;
     int subdirs;
 };
@@ -169,8 +172,9 @@ void render(Map &m, projectionconfig *prj, TileStore& store, const tile& t)
 
     mapnik::image_view<mapnik::image_rgba8> v1(0, 0, 256, 256, buf);
     struct mapnik::image_view_any view(v1);
-    string data = mapnik::save_to_string(view, "png256");
+
     //cout << "first rendered byte is at " << (void*)(&(data.at(0))) << endl;
+    string data = mapnik::save_to_string(view, "png256");
 
     store.storeTile(t, std::move(data));
 }
@@ -223,7 +227,8 @@ namespace po = boost::program_options;
 
 int parse_args(int argc, char *argv[], Args *args) {
     string usage = "";
-    usage += "atrender " ATRENDER_VERSION "\n"
+    usage += "ATRender " ATRENDER_VERSION "\n"
+             "Copyright (C) 2016 Andy Teijelo <github.com/ateijelo>\n"
              "Usage: " + string(argv[0]) + " [options]";
     po::options_description desc(usage, 90);
     desc.add_options()
@@ -234,6 +239,14 @@ int parse_args(int argc, char *argv[], Args *args) {
                     "mapnik XML stylesheet")
             (",n", po::value<int>(&args->threads)->default_value(1),
                     "number of threads")
+            (",p", po::value<string>(&args->postprocess),
+                    "postprocess tiles with the given command. The command will "
+                    "receive as its only argument the filename, ending in \".png\", "
+                    "of the rendered tile. The command should use the same filename "
+                    "for its result.")
+            (",t", po::value<string>(&args->tempdir),
+                    "directory for temporary files; these will be created only "
+                    "if postprocessing is enabled.")
             (",d", po::value<string>(&args->output_dir),
                     "save tiles to given directory")
             ("subdirs,s", po::value<int>(&args->subdirs)->default_value(0),
@@ -311,6 +324,11 @@ string pretty(double seconds)
     return o.str();
 }
 
+std::chrono::milliseconds operator""_ms(unsigned long long d)
+{
+    return std::chrono::milliseconds(d);
+}
+
 int main(int argc, char *argv[])
 {
     int r = parse_args(argc, argv, &args);
@@ -336,6 +354,11 @@ int main(int argc, char *argv[])
         cout << "You must specify a place to save tiles to (-m or -d)" << endl;
         cout << "See " << argv[0] << " -h" << endl;
         return 1;
+    }
+
+    if (!args.postprocess.empty()) {
+        store->postprocess(args.postprocess);
+        store->tempdir(args.tempdir);
     }
 
     string line;
@@ -375,14 +398,17 @@ int main(int argc, char *argv[])
         threads[i] = std::thread { render_thread, store, args.xml };
     }
 
-    std::chrono::milliseconds d(1000);
+    //std::chrono::milliseconds d(1000);
     auto start = std::chrono::system_clock::now();
+
+    //auto e = 100_ms;
+
 
     int total_tiles = tiles.size();
     int moveup = 1; bool first = true;
     while (true)
     {
-        std::this_thread::sleep_for(d);
+        std::this_thread::sleep_for(1000_ms);
         auto now = std::chrono::system_clock::now();
         std::chrono::duration<double> elapsed = now - start;
 
